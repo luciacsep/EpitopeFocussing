@@ -1,0 +1,465 @@
+---
+title: "NRM_RSVF_NGS_analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load data:
+
+C: cohort C, 5 Balb/c mice immunized with full-length RSV-F and Alum
+
+X: cohort X, 5 Balb/c mice immunized with NRM and Alum
+
+```{r data}
+
+rm(list=ls())
+
+path <- '.'
+
+fpath <- './figures/'
+
+col_palettes <- list(c("#f1eef6","#045a8d","#2b8cbe"),
+                     c("#edf8fb","#810f7c", "#b3cde3"),
+                     c("#edf8fb","#006d2c","#2ca25f"),
+                     c("aquamarine3", "slateblue4", "snow3"))
+
+```
+
+Helper function to extract the field of valid CDR3s from MAF .csv files
+
+```{r functions, include=FALSE, cache=TRUE}
+
+# Helper function to extract the field of valid CDR3s from MAF .csv files
+
+get_field <- function(dataset, field){
+  
+  idx <- which(names(dataset) == field)
+  clmns <- dataset[which(dataset$MAF_Clonal_. != 0), idx]
+  
+  return(clmns)
+}
+
+```
+
+Load pkg and libraries:
+
+```{r libraries, include=FALSE, cache=TRUE}
+
+library(dplyr)
+library(venn)
+library(stringdist)
+library(motifStack)
+library(VennDiagram)
+library(circlize)
+library(RColorBrewer)
+
+
+```
+
+Process datasets:
+1) Remove internal spike-in controls for analysis and recalculate frequencies of CDR3s
+2) Remove all CDR3s which are listed with a MAF_Clonal frequency of 0 or NA
+
+```{r datasets, include=FALSE, cache=TRUE}
+
+data <- list()
+
+files <- grep('.txt', list.files(path, full.names = TRUE), value = TRUE)
+
+for(i in 1:length(files)){
+  
+  data[[i]] <- read.delim(files[i])
+  data[[i]] <- data[[i]][data[[i]]$Majority_Isotype != 'Control',]
+  data[[i]] <- data[[i]][data[[i]]$MAF_Clonal_. != 0,]
+  data[[i]]$MAF_Clonotype_.[is.na(data[[i]]$MAF_Clonotype_.)] <- 0
+  data[[i]]$MAF_Clonotype_. <- data[[i]]$MAF_Clonotype_./sum(data[[i]]$MAF_Clonotype_.)*100
+  data[[i]]$MAF_Clonal_. <- data[[i]]$MAF_Clonal_./sum(data[[i]]$MAF_Clonal_.)*100
+}
+
+names(data) <- sapply(strsplit(files, split = '[/_.]'), function(x) x[7])
+
+```
+
+Perform CLuster analysis:
+For the identification of clonotypes hierarchical clustering is utilized to group CDR3 sequences together. The following parameters are used: identical IGHV and IGHJ gene segment usage, identical CDR3 length, and at least 80% CDR3 a.a. similarity to one other sequence in the given clonotype (single linkage).
+
+```{r Cluster, echo=F, cache=T}
+
+Combined_Datasets <- list()
+Clusters <- list()
+Overlap_Table <- list()
+
+# Helper function to select the relevant subsets
+
+select_columns <- function(x){
+  x_new <- dplyr::select(x, c('CDR3', 'Majority_V_Gene', 'Majority_J_Gene'))
+  return(x_new)
+}
+
+# Helper function to calculate distance matrix
+
+dist_calc <- function(x){
+  
+  dist_mat <- as.dist(stringdistmatrix(x, x, method = 'hamming')/nchar(x[1]))
+  return(dist_mat)
+  
+}
+
+# Function to compute clonotypes
+
+clonal_clustering <- function(data){
+  
+  meta_list <- split(data, 
+                     list(data$Majority_V_Gene, 
+                          data$Majority_J_Gene, 
+                          data$Len))
+  
+  idxs <- which(sapply(meta_list, function(x) length(x$CDR3)) > 0)
+  
+  meta_list <- meta_list[idxs]
+  
+  dist_mat <- lapply(meta_list, function(x) dist_calc(x$CDR3))
+  
+  # Hierarchical clustering step, complete linkage, cut tree at 20% dissimilarity
+  
+  clusts <- lapply(dist_mat, function(x) {
+    if(length(x) > 0){
+      return(cutree(hclust(x, method = 'single'), h = 0.2))
+    } else {
+      return(1)
+    }
+  }
+  )
+  
+  # Needed to increase the clonotype numbering correctly
+  add_nr <- 0
+  
+  # Renumber clonotypes 
+  for(i in 1:length(clusts)){
+    clusts[[i]] <- clusts[[i]] + add_nr
+    add_nr <- max(clusts[[i]])
+  }
+  
+  meta_list <- do.call(rbind, meta_list)
+  meta_list$clonotype <- unlist(clusts)
+  
+  
+  return(unique(meta_list))
+}
+
+drawQV <- function(a, b, c, d, e, n1, n2, n3, n4, n5) {
+  
+  draw.quintuple.venn(area1 = length(a), 
+                      area2 = length(b), 
+                      area3 = length(c), 
+                      area4 = length(d), 
+                      area5 = length(e), 
+                      n12 = sum(a%in%b), 
+                      n13 = sum(a%in%c), 
+                      n14 = sum(a%in%d), 
+                      n15 = sum(a%in%e), 
+                      n23 = sum(b%in%c), 
+                      n24 = sum(b%in%d), 
+                      n25 = sum(b%in%e), 
+                      n34 = sum(c%in%d), 
+                      n35 = sum(c%in%e), 
+                      n45 = sum(e%in%d), 
+                      n123 = length(Reduce(intersect, list(a,b,c))), 
+                      n124 = length(Reduce(intersect, list(a,b,d))), 
+                      n134 = length(Reduce(intersect, list(a,c,d))), 
+                      n234 = length(Reduce(intersect, list(b,c,d))), 
+                      n125 = length(Reduce(intersect, list(a,b,e))), 
+                      n135 = length(Reduce(intersect, list(a,c,e))), 
+                      n145 = length(Reduce(intersect, list(a,e,d))), 
+                      n235 = length(Reduce(intersect, list(b,c,e))), 
+                      n245 = length(Reduce(intersect, list(b,e,d))), 
+                      n345 = length(Reduce(intersect, list(c,d,e))),  
+                      n1234 = length(Reduce(intersect, list(a,b,c,d))), 
+                      n1235 = length(Reduce(intersect, list(a,b,c,e))), 
+                      n1245 = length(Reduce(intersect, list(a,b,d,e))), 
+                      n1345 = length(Reduce(intersect, list(a,c,d,e))), 
+                      n2345 = length(Reduce(intersect, list(b,c,d,e))), 
+                      n12345 = length(Reduce(intersect, list(a,b,c,d,e))),  
+                      category = c(n1, 
+                                   n2, 
+                                   n3, 
+                                   n4, 
+                                   n5), 
+                      fill = c("#b2182b","#ef8a62","#fddbc7","#67a9cf","#2166ac"))
+}
+
+
+# Iterate through data sets given by the order in 'pat'
+pat <- c("C.*", "X.*")
+title <- c("C", "X")
+
+n_j <- 0
+
+for(i in 1:2){
+    Combined_Datasets[[i]] <- do.call(rbind, lapply(data[grep(pat[i], names(data))],
+                                                    select_columns))
+    
+    Combined_Datasets[[i]] <- unique(Combined_Datasets[[i]])
+    
+    Combined_Datasets[[i]]$CDR3 <- as.character((Combined_Datasets[[i]]$CDR3))
+    Combined_Datasets[[i]]$Len <- nchar(Combined_Datasets[[i]]$CDR3)
+    
+    Clusters[[i]] <- clonal_clustering(Combined_Datasets[[i]])
+    
+    
+    for(j in 1:length(data[grep(pat[i], names(data))])){
+      
+      data[[n_j+j]] <- merge(Clusters[[i]], data[[n_j+j]], 
+                            by = c('CDR3', 'Majority_V_Gene', 'Majority_J_Gene'),
+                            all = F)
+    }
+
+    
+    tab <- lapply(data[grep(pat[i], names(data))], function(x) unique(x$clonotype))
+    
+    Overlap_Table[[i]] <- table(unlist(tab))
+    
+    n_j <- n_j + length(data[grep(pat[i], names(data))])
+
+      
+}
+
+Combined_Datasets <- do.call(rbind, lapply(data, select_columns))
+
+Combined_Datasets <- unique(Combined_Datasets)
+
+Combined_Datasets$CDR3 <- as.character((Combined_Datasets$CDR3))
+Combined_Datasets$Len <- nchar(Combined_Datasets$CDR3)
+
+Clusters <- clonal_clustering(Combined_Datasets)
+names(Clusters)[names(Clusters) == "clonotype"] <- "clonotype_large"
+
+for(j in 1:length(data)){
+  
+  data[[j]] <- merge(Clusters, data[[j]], 
+                         by = c('CDR3', 'Majority_V_Gene', 'Majority_J_Gene'),
+                         all = F)
+}
+
+```
+
+
+Check overlap of clonotypes between both cohorts C and X and visualize with Venn diagram:
+
+```{r VennDiagram_between_cohorts, echo = FALSE, cache=TRUE}
+
+# Iterate through data sets given by the order in 'pat'
+pat <- c("C.*", "X.*")
+title <- c("RSVF", "NRM")
+
+# Generate venn diagrams between groups
+
+cl <- list()
+
+for(i in 1:2){
+  cl[[i]] <- unique(unlist(lapply(data[grep(pat[i], names(data))], function(x) get_field(x, 'clonotype_large'))))
+}
+
+par(mfrow = c(2, 2))
+
+pdf(paste(fpath, 'Clonotype_Venn_between_cohorts', '.pdf', sep ="")) 
+
+venn(cl[1:2], zcolor = c("#67a9cf","#2166ac"),  snames = title[1:2], 
+     lty =   c(1, 1), col = "black", cexil = 1, cexsn = 1)
+ 
+ 
+```
+
+
+The overlap of clonotypes between both cohorts is analyzed by extracting the 20 most expanded clonotypes from each cohort and visualizing their size, occurrence, and Vgene usage by a circos plot using R software circlize:
+
+```{r Overlap of Top 20 clonotypes between C and X: CircosPlot, include=F, echo=F, cache=T}
+
+circos.clear()
+
+library(zoo)
+library(RColorBrewer)
+
+df_all <- list()
+pat <- c("C.*", "X.*")
+title <- c("C", "X")
+
+N <- 20
+to_keep <- c()
+
+for(i in 1:2){
+  
+  clonotype_tbl <- table(unlist(sapply(data[grep(pat[i], names(data))], function(x) unique(x$clonotype_large))))
+  clonotype_tbl <- tibble(clonotype_large = names(clonotype_tbl), clonotype_occ = as.numeric(clonotype_tbl))
+  
+  df_all[[i]] <- do.call(rbind, data[grep(pat[i], names(data))])
+  df_all[[i]]$clonotype_large <- as.character(df_all[[i]]$clonotype_large)
+  
+  
+  cl_tbl <- df_all[[i]][,c(1, 2, 5, 11)] %>% group_by(clonotype_large) %>% summarise(cl_freq = sum(MAF_Clonal_.)/sum(df_all[[i]]$MAF_Clonal_.))
+  
+  df_all[[i]] <- df_all[[i]][,c(1, 2, 5, 11)] %>% group_by(CDR3, clonotype_large, Majority_V_Gene) %>% summarise(percent = mean(MAF_Clonal_.))
+  
+  df_all[[i]] <- full_join(df_all[[i]], clonotype_tbl, by = 'clonotype_large')
+  df_all[[i]] <- full_join(df_all[[i]], cl_tbl, by = 'clonotype_large')
+  
+  df_all[[i]]$Antigen <- title[i]  
+  
+  cl_tab <- table(df_all[[i]]$clonotype_large)
+  cl_tab <- cl_tab[order(cl_tab, decreasing = T)]
+  
+  df_all[[i]]$clonotype_large <- factor(df_all[[i]]$clonotype_large, levels = names(cl_tab))
+  df_all[[i]] <- with(df_all[[i]], df_all[[i]][order(clonotype_large),])
+  df_all[[i]]$clonotype_large <- as.character(df_all[[i]]$clonotype_large)
+  
+  cl_size <- tibble(clonotype_large=names(table(df_all[[i]]$clonotype_large)), cl_size = as.numeric(table(df_all[[i]]$clonotype_large)))
+  
+  # can be removed to make per clone plot
+  
+  df_all[[i]] <- unique(df_all[[i]][,c(2,3,5:7)])
+  df_all[[i]] <- full_join(df_all[[i]], cl_size, by='clonotype_large')
+  
+  to_keep <- append(to_keep, names(cl_tab)[1:N])
+  
+}
+
+
+names(df_all) <- title
+
+df <- list()
+
+df$C <- df_all$C[df_all$C$clonotype_large%in%to_keep, ]
+df$X <- df_all$X[df_all$X$clonotype_large%in%to_keep, ]
+
+for(i in c(1:2)){
+  df[[i]]$start <- c(0, cumsum(df[[i]]$cl_size)[1:length(df[[i]]$cl_size)-1])
+  df[[i]]$end <- cumsum(df[[i]]$cl_size)
+}
+
+
+n1 <- length(df$C$clonotype_large)
+n2 <- length(df$X$clonotype_large)
+
+vg <- unique(c(as.character(df$C$Majority_V_Gene), as.character(df$X$Majority_V_Gene)))
+n <- length(vg)
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+
+set.seed(28062018)
+cols <- tibble(Majority_V_Gene = unique(vg), color = sample(col_vector, n))
+df <- lapply(df, function(x) left_join(x, cols))
+
+
+tracks <- matrix(c(rep(0,2), df$C$end[n1], df$X$end[n2]),2)
+
+pdf(file = '~/Desktop/XC/figures/circos_X_C.pdf', 12, 12)
+
+
+par(mar=c(5.1,4.1,4.1,15.1), xpd =TRUE)
+
+
+circos.par("track.height" = 0.2, track.margin=c(0,0), points.overflow.warning=FALSE, gap.degree = 7)
+circos.initialize(factors = c("C", "X"), xlim = tracks)
+
+circos.track(ylim = c(0, 5), panel.fun = function(x, y) {
+  
+  n <- length(df$C$clonotype_large)
+  circos.rect(df$C$start, rep(0, n),df$C$end, df$C$clonotype_occ, 
+              col = df$C$color, track.index = 1, sector.index = 'C', border = 'black')
+  
+})
+
+circos.yaxis(at = c(1,2,3,4,5), labels = c('1','','','','5') , track.index = 1, sector.index = 'C', labels.cex = 0.6)
+
+
+n <- length(df$X$clonotype_large)
+circos.rect(df$X$start, rep(0, n), df$X$end, df$X$clonotype_occ, 
+            col = df$X$color, track.index = 1, sector.index = 'X', border = 'black')
+circos.yaxis(at = c(1,2,3,4,5), labels = c('1','','','','5') , track.index = 1, sector.index = 'X', labels.cex = 0.6)
+
+
+circos.track(ylim = c(1,5), panel.fun = function(x, y) {
+  n <- length(df$C$clonotype_large)
+  circos.rect(df$C$start,rep(5, n) ,df$C$end, -1*log10(df$C$cl_freq),
+              col = df$C$color, track.index = 2, sector.index = 'C', border = 'black')
+  
+})
+circos.yaxis(at = c(1,2,3,4,5), labels = c('-2','','','','-6') , track.index = 2, sector.index = 'C', labels.cex = 0.6)
+
+
+n <- length(df$X$clonotype_large)
+circos.rect(df$X$start, rep(5, n), df$X$end, -1*log10(df$X$cl_freq), 
+            col = df$X$color, track.index = 2, sector.index = 'X', border = 'black')
+circos.yaxis(at = c(1,2,3,4,5), labels = c('-2','','','','-6') , track.index = 2, sector.index = 'X', labels.cex = 0.6)
+
+
+#circos.trackPoints(df$factors, df$x, df$y, col = col, pch = 16, cex = 0.5)
+circos.text(250, 7.5, "RSV-F only", sector.index = "C", track.index = 1)
+circos.text(350, 7.5, "FFL only", sector.index = "X", track.index = 1)
+
+ol <- inner_join(df$C, df$X, by='clonotype_large')[,c(5, 7, 8, 9,  13, 15, 16)]
+
+for(i in 1:length(ol$start.x)){
+ circos.link(ol$Antigen.x[i], quantile(c(ol$start.x[i],ol$end.x[i]))[c(2,4)], ol$Antigen.y[i], quantile(c(ol$start.y[i],ol$end.y[i]))[c(2,4)], col = ol$color.x[i], border = ol$color.x[i])
+}
+
+ol <- inner_join(df$C, df$X, by='clonotype_large')[,c(5, 7, 8, 9,  13, 15, 16)]
+
+for(i in 1:length(ol$start.x)){
+ circos.link(ol$Antigen.x[i], quantile(c(ol$start.x[i],ol$end.x[i]))[c(2,4)], ol$Antigen.y[i], quantile(c(ol$start.y[i],ol$end.y[i]))[c(2,4)], col = ol$color.x[i], border = ol$color.x[i])
+}
+
+legend(x = 1.2, y = 0.8, legend = cols$Majority_V_Gene, fill = cols$color)
+
+dev.off()
+
+
+```
+
+CDR3 sequence similarities between overlapping clonotypes are represented graphically with the R software motifStack:
+
+```{r extract CDR3 logos from C and X from top9 clonotypes of cohort X, echo=FALSE, cache=TRUE}
+
+
+df_all$X <- with(df_all$X, df_all$X[order(cl_size, decreasing = T),])
+
+cl_idx <- df_all$X$clonotype_large[1:9]
+
+colors <- c('red', 'blue')
+col <- list()
+
+for(i in 1:length(cl_idx)){
+  
+  seqs <- unlist(lapply(data, function(x) x$CDR3[x$clonotype_large == cl_idx[i]]))
+  seqs <- as.tbl(data.frame(cdr3= seqs, data = names(seqs))) %>% group_by(cdr3) %>% summarise(paste(sort(unique(data)),collapse=", ")) 
+  
+  names(seqs)[2] <- 'groups'
+  
+  print(i)
+  
+  for(j in 1:2){
+    col[[j]] <-rep('NA', length = length(seqs$cdr3))
+    col[[j]][grep(title[j], seqs$groups)] <- colors[j]
+    
+    c1 <- as.character(seqs$cdr3[grep(title[j], seqs$groups)])
+   
+    if(length(c1) > 0){
+      
+      c1_pwm <- pcm2pfm(consensusMatrix(c1))
+      motif<-new("pfm", mat=c1_pwm, name=paste('Clonotype ', i, 'Cohort', title[j]), color=colorset(alphabet="AA",colorScheme="chemistry"))
+      
+      pdf(file = paste('~/Desktop/XC/figures/Logo_', i, '_Cohort_', title[j], '.pdf', sep =''), height = 7, width = 10)
+      plot(motif, ic.scale=F, ylab='Probability' )
+      dev.off()
+    } else {
+      print('Skip')
+    }
+  }
+  
+
+}
+```
+
